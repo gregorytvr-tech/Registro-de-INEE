@@ -2376,4 +2376,49 @@ box-shadow:none!important;font-weight:900!important;color:#111!important;font-si
 })();
 </script>
 
+
+<script id="v34-correccion-prefijo-nombre">
+(function(){
+  const E=id=>document.getElementById(id);
+
+  function corregir(){
+    const nombre=E("regNombre");
+    const curp=E("regCurp");
+    if(!nombre || !curp || !nombre.value || !curp.value) return;
+
+    let texto=String(nombre.value).toUpperCase().trim().replace(/\s+/g," ");
+    const c=String(curp.value).toUpperCase().replace(/[^A-Z0-9]/g,"");
+    if(!/^[A-Z]/.test(c)) return;
+
+    const inicial=c[0];
+    const partes=texto.split(" ");
+    if(!partes.length) return;
+
+    const apellido=partes[0];
+    // El primer apellido debe comenzar con la misma inicial que la CURP.
+    // Si OCR antepone 1-3 caracteres (ELOPEZ, NELOPEZ, etc.), los elimina
+    // hasta la primera aparición razonable de la inicial correcta.
+    if(apellido[0] !== inicial){
+      const p=apellido.indexOf(inicial);
+      if(p>0 && p<=3 && apellido.length-p>=4){
+        partes[0]=apellido.slice(p);
+        nombre.value=partes.join(" ");
+        nombre.dispatchEvent(new Event("change",{bubbles:true}));
+      }
+    }
+  }
+
+  // Se ejecuta después de que los distintos pases OCR terminan de escribir.
+  let ultimo="";
+  setInterval(()=>{
+    const actual=(E("regNombre")?.value||"")+"|"+(E("regCurp")?.value||"");
+    if(actual && actual!==ultimo){ ultimo=actual; corregir(); }
+  },300);
+
+  document.addEventListener("input",e=>{
+    if(e.target?.id==="regNombre" || e.target?.id==="regCurp") setTimeout(corregir,20);
+  },true);
+})();
+</script>
+
 </body></html>
