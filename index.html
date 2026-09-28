@@ -2040,4 +2040,179 @@ box-shadow:0 2px 7px rgba(0,0,0,.18)!important;border-radius:7px!important;paddi
 })();
 </script>
 
+
+<script id="v30-genero-vigencia-mapa">
+(function(){
+  const E=id=>document.getElementById(id);
+
+  function sinAcentos(v){
+    return String(v||"").normalize("NFD").replace(/[\u0300-\u036f]/g,"").toUpperCase();
+  }
+
+  function generoDesdeCurp(curp){
+    const c=String(curp||"").toUpperCase().replace(/[^A-Z0-9]/g,"");
+    if(c.length>=11 && (c[10]==="H" || c[10]==="M")) return c[10];
+    return "";
+  }
+
+  function vigenciaReforzada(data){
+    const textos=[
+      data?.textoOcrVigencia, data?.textoOcrInferior, data?.textoOcrDatos,
+      data?.textoOcrLocal, data?.vigenciaLocal, data?.vigencia
+    ].filter(Boolean).map(sinAcentos);
+
+    for(const raw of textos){
+      const t=raw
+        .replace(/[–—_]/g,"-")
+        .replace(/V[Il1]G[E3]NC[Il1]A/g,"VIGENCIA")
+        .replace(/\b([2Z])([0OQ])(\d{2})\b/g,(_,a,b,c)=>"20"+c);
+
+      // VIGENCIA 2024-2034 / VIGENCIA 2024 2034 / VIGENCIA ... 2034
+      let m=t.match(/VIGENCIA[\s:.\-]{0,20}(20\d{2})[\s\/.\-]{1,12}(20\d{2})/);
+      if(m) return m[1]+"-"+m[2];
+
+      m=t.match(/VIGENCIA[^0-9]{0,25}(20\d{2})/);
+      if(m) return m[1];
+
+      // En un recorte dedicado de vigencia aceptar un rango claro aunque la etiqueta falle.
+      m=t.match(/\b(20\d{2})\s*[-\/]\s*(20\d{2})\b/);
+      if(m) return m[1]+"-"+m[2];
+    }
+    return "";
+  }
+
+  // Completa Género desde la CURP y refuerza Vigencia antes de pintar/guardar.
+  if(typeof window.render==="function"){
+    const renderAnterior=window.render;
+    window.render=function(data,scan,localFront){
+      if(data && typeof data==="object"){
+        if(!data.genero) data.genero=generoDesdeCurp(data.curp);
+        if(!data.vigencia) data.vigencia=vigenciaReforzada(data);
+        if(data.genero && !data.generoFuente) data.generoFuente="CURP / OCR";
+        if(data.vigencia && !data.vigenciaFuente) data.vigenciaFuente="OCR reforzado";
+      }
+      return renderAnterior.call(this,data,scan,localFront);
+    };
+  }
+
+  // Respaldo directo del formulario.
+  function completarCampos(){
+    const g=E("regGenero"), c=E("regCurp");
+    if(g && !String(g.value||"").trim()){
+      const x=generoDesdeCurp(c?.value);
+      if(x) g.value=x;
+    }
+  }
+
+  // Mapa: mostrar claramente SOLO la sección capturada y sus casillas.
+  function numeroSeccion(){
+    const n=parseInt(String(E("regSeccion")?.value||"").replace(/\D/g,""),10);
+    return Number.isFinite(n)?n:null;
+  }
+
+  window.actualizarMapaElectoralV30=function(){
+    if(typeof initRineMap==="function") initRineMap();
+    const sn=numeroSeccion();
+    if(!window.rineMap || !window.seccionLayer || sn===null) return;
+
+    let seleccion=null;
+
+    // Ocultar visualmente las demás secciones para que no se confundan con la elegida.
+    seccionLayer.eachLayer(l=>{
+      const actual=Number(l.feature?.properties?.SECCION)===sn;
+      try{ l.unbindTooltip(); }catch(_){}
+      if(actual){
+        seleccion=l;
+        l.setStyle({
+          color:"#111111", weight:3.5, opacity:1,
+          fill:true, fillColor:"#ffffff", fillOpacity:0.16
+        });
+        l.bindTooltip("SECCIÓN "+sn,{
+          permanent:true,direction:"center",className:"section-number-label"
+        }).openTooltip();
+        try{l.bringToFront();}catch(_){}
+      }else{
+        l.setStyle({
+          color:"transparent", weight:0, opacity:0,
+          fill:true, fillColor:"transparent", fillOpacity:0
+        });
+      }
+    });
+
+    if(window.casillaLayer) casillaLayer.clearLayers();
+    const cas=(typeof casillasPorSeccion==="function")?casillasPorSeccion(sn):[];
+    const puntos=[];
+    let cards="";
+
+    cas.forEach(c=>{
+      if(Number.isFinite(Number(c.lat)) && Number.isFinite(Number(c.lon))){
+        const mk=L.marker([Number(c.lat),Number(c.lon)],{
+          title:"Casilla sección "+sn,
+          zIndexOffset:1000
+        }).addTo(casillaLayer);
+        mk.bindPopup(
+          "<b>SECCIÓN "+sn+" · CASILLA "+escMap(c.casillas||"")+"</b><br>"+
+          escMap(c.ubicacion||"")+"<br>"+escMap(c.domicilio||"")+
+          (c.referencia?"<br><small>Referencia: "+escMap(c.referencia)+"</small>":"")
+        );
+        puntos.push([Number(c.lat),Number(c.lon)]);
+      }
+      cards+='<div class="casillaCard"><b>Sección '+sn+' · Casilla '+escMap(c.casillas||"")+
+        '</b>'+escMap(c.ubicacion||"")+'<br>'+escMap(c.domicilio||"")+
+        (c.referencia?'<br><small>Referencia: '+escMap(c.referencia)+'</small>':'')+'</div>';
+    });
+
+    const info=E("casillaInfo");
+    if(info) info.innerHTML=cards || '<div class="casillaCard">No hay casillas cargadas para la sección '+sn+'.</div>';
+
+    // El encuadre siempre prioriza el polígono completo de la sección.
+    if(seleccion){
+      rineMap.fitBounds(seleccion.getBounds(),{padding:[28,28],maxZoom:16});
+    }else if(puntos.length){
+      rineMap.fitBounds(L.latLngBounds(puntos),{padding:[28,28],maxZoom:16});
+    }
+
+    const st=E("mapStatus");
+    if(st){
+      st.textContent=seleccion
+        ? "Sección "+sn+" delimitada. Se muestran "+cas.length+" ubicación(es) de casilla cargadas."
+        : "La sección "+sn+" no está disponible en la cartografía cargada; se muestran sus casillas disponibles.";
+    }
+    setTimeout(()=>rineMap.invalidateSize(),100);
+  };
+
+  // Esta versión ya no intenta ubicar el domicilio; sólo sección + casillas.
+  function actualizarTodo(){
+    completarCampos();
+    setTimeout(()=>window.actualizarMapaElectoralV30(),80);
+  }
+
+  const sec=E("regSeccion");
+  if(sec){
+    sec.addEventListener("change",actualizarTodo);
+    sec.addEventListener("input",()=>{
+      clearTimeout(window.__v30maptimer);
+      window.__v30maptimer=setTimeout(actualizarTodo,180);
+    });
+  }
+  const curp=E("regCurp");
+  if(curp) curp.addEventListener("input",completarCampos);
+
+  // Ejecutar después de que cualquier versión anterior termine de llenar el formulario.
+  if(typeof window.fillRegistration==="function"){
+    const fillAnterior=window.fillRegistration;
+    window.fillRegistration=function(data){
+      if(data && !data.genero) data.genero=generoDesdeCurp(data.curp);
+      if(data && !data.vigencia) data.vigencia=vigenciaReforzada(data);
+      const r=fillAnterior.call(this,data);
+      completarCampos();
+      setTimeout(()=>window.actualizarMapaElectoralV30(),950);
+      return r;
+    };
+  }
+
+  setTimeout(actualizarTodo,1200);
+})();
+</script>
+
 </body></html>
