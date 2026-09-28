@@ -2329,4 +2329,51 @@ box-shadow:none!important;font-weight:900!important;color:#111!important;font-si
 })();
 </script>
 
+
+<script id="v33-solo-nombre-ocr">
+(function(){
+  const E=id=>document.getElementById(id);
+
+  function limpiarLineaNombre(s){
+    return String(s||"").toUpperCase()
+      .normalize("NFD").replace(/[\u0300-\u036f]/g,"")
+      .replace(/[^A-ZÑ\s'-]/g," ")
+      .replace(/\s+/g," ").trim();
+  }
+
+  function corregirRuidoEtiquetaNombre(nombre){
+    let s=limpiarLineaNombre(nombre);
+    // Corrección genérica del artefacto observado: una letra residual de la etiqueta
+    // NOMBRE puede quedar pegada al inicio del primer apellido.
+    // Sólo se aplica cuando el resto del nombre coincide mejor con la información
+    // estructurada de CURP/clave de elector.
+    const curp=String(E("regCurp")?.value||"").toUpperCase().replace(/[^A-Z0-9]/g,"");
+    const clave=String(E("regClave")?.value||E("regClaveElector")?.value||"").toUpperCase().replace(/[^A-Z0-9]/g,"");
+    const parts=s.split(/\s+/).filter(Boolean);
+    if(!parts.length) return s;
+
+    // Inicial esperada del primer apellido: CURP[0] y, como respaldo, clave de elector[0].
+    const inicial=(curp.match(/^[A-Z]/)||clave.match(/^[A-Z]/)||[])[0]||"";
+    if(inicial && parts[0].length>=4 && parts[0][0]!==inicial && parts[0][1]===inicial){
+      parts[0]=parts[0].slice(1);
+    }
+    return parts.join(" ");
+  }
+
+  function aplicar(){
+    const el=E("regNombre");
+    if(!el || !el.value) return;
+    const antes=el.value;
+    const despues=corregirRuidoEtiquetaNombre(antes);
+    if(despues && despues!==antes) el.value=despues;
+  }
+
+  // No toca mapa, sección, casillas ni vigencia.
+  setInterval(aplicar,450);
+  document.addEventListener("change",e=>{
+    if(e.target && (e.target.id==="regNombre" || e.target.id==="regCurp")) aplicar();
+  },true);
+})();
+</script>
+
 </body></html>
