@@ -1056,31 +1056,7 @@ $("realBtn").onclick=async()=>{
    const v24=extractV24Fields(localFront);
    for(const k of ['curp','claveElector','fechaNacimiento','genero','direccion','calle','colonia','codigoPostal','cic','identificadorCiudadano']) if(v24[k]) lf[k]=v24[k];
    const mrz=parseMrz(backMrz.text||'');
-   // V32: conservar el nombre frontal y usar MRZ para reparar letras omitidas.
-   function distNombre(a,b){
-     a=String(a||''); b=String(b||'');
-     const d=Array.from({length:a.length+1},()=>Array(b.length+1).fill(0));
-     for(let i=0;i<=a.length;i++)d[i][0]=i;
-     for(let j=0;j<=b.length;j++)d[0][j]=j;
-     for(let i=1;i<=a.length;i++)for(let j=1;j<=b.length;j++)
-       d[i][j]=Math.min(d[i-1][j]+1,d[i][j-1]+1,d[i-1][j-1]+(a[i-1]===b[j-1]?0:1));
-     return d[a.length][b.length];
-   }
-   function repararNombreFrente(frente,mrzNombre){
-     const f=String(frente||'').toUpperCase().split(/\s+/).filter(Boolean);
-     const m=String(mrzNombre||'').toUpperCase().split(/\s+/).filter(Boolean);
-     if(!f.length) return m.join(' ');
-     if(!m.length) return f.join(' ');
-     return f.map(tok=>{
-       let best=tok, bd=99;
-       for(const mt of m){
-         const d=distNombre(tok,mt);
-         if(d<bd && d<=1 && mt.length>=tok.length){best=mt;bd=d;}
-       }
-       return best;
-     }).join(' ');
-   }
-   lf.nombreCompleto=repararNombreFrente(lf.nombreCompleto,mrz.name);
+   if(mrz.name && !lf.nombreCompleto) lf.nombreCompleto=mrz.name;
    // Sección: frente con etiqueta tiene prioridad; MRZ es respaldo.
    let seccionFinal=/^\d{4}$/.test(String(lf.seccion||'')) ? String(lf.seccion) : '';
    let seccionFuente=seccionFinal ? 'etiqueta SECCIÓN del frente' : '';
@@ -1119,7 +1095,7 @@ $("realBtn").onclick=async()=>{
      textoOcrVigencia:localFront.vigenciaText||'',
      textoOcrLocal:localFront.text,
      textoOcrMRZ:backMrz.text||"",
-     nombreFuente:(lf.nombreCompleto?(mrz.name?"zona NOMBRE + reparación MRZ":"zona NOMBRE del frente"):"no detectado"),
+     nombreFuente:mrz.name?"MRZ reverso":(lf.nombreCompleto?"zona NOMBRE del frente":"no detectado"),
      seccionFuente:seccionFuente||"no detectada",
      vigenciaFuente:vigenciaFinal?"OCR multipase dedicado a VIGENCIA":"no detectada / rechazada por validador",
      lineaMrzNombre:mrz.lineaNombre||"",
@@ -2240,122 +2216,116 @@ box-shadow:0 2px 7px rgba(0,0,0,.18)!important;border-radius:7px!important;paddi
 </script>
 
 
-<script id="v32-fix-real-map-and-name">
+<style id="v32-map-label">
+.section-number-label{background:rgba(255,255,255,.92)!important;border:2px solid #111!important;
+box-shadow:none!important;font-weight:900!important;color:#111!important;font-size:14px!important}
+</style>
+<script id="v32-nombre-mapa">
 (function(){
  const E=id=>document.getElementById(id);
 
- function secNum(){
-   const n=parseInt(String(E("regSeccion")?.value||"").replace(/\D/g,""),10);
-   return Number.isFinite(n)?n:null;
+ function cleanNameLine(s){
+   return String(s||"").toUpperCase()
+    .replace(/[|_[\]{}()]/g," ")
+    .replace(/[^A-ZÁÉÍÓÚÜÑ\s'-]/g," ")
+    .replace(/\s+/g," ").trim();
+ }
+ function plausible(s){
+   if(!s||s.length<2)return false;
+   return !/^(NOMBRE|DOMICILIO|CLAVE|ELECTOR|CURP|SECCION|SECCIÓN|VIGENCIA|SEXO|FECHA|NACIMIENTO|MEXICO|MÉXICO|INSTITUTO|NACIONAL|ELECTORAL)$/.test(s);
+ }
+ function nombreFrontalReforzado(){
+   try{
+     // Reuse every front OCR pass already produced by the app.
+     const pool=[
+       window.__lastLocalFront?.nameText,
+       window.__lastLocalFront?.text,
+       window.__lastLocalFront?.identityText,
+       window.__lastLocalFront?.generalText
+     ].filter(Boolean).join("\n");
+     if(!pool)return "";
+     const raw=pool.split(/\n+/).map(cleanNameLine).filter(Boolean);
+     let start=raw.findIndex(x=>/^NOMBRE\b/.test(x));
+     let lines=[];
+     if(start>=0){
+       const first=cleanNameLine(raw[start].replace(/^NOMBRE\s*/,""));
+       if(plausible(first))lines.push(first);
+       for(let i=start+1;i<Math.min(raw.length,start+6);i++){
+         if(/^(DOMICILIO|CLAVE|CURP|SECCION|SECCIÓN|FECHA|SEXO|VIGENCIA)\b/.test(raw[i]))break;
+         if(plausible(raw[i]))lines.push(raw[i]);
+         if(lines.length>=3)break;
+       }
+     }
+     // INE normally prints surname(s) and given name(s) as separate lines.
+     return lines.join(" ").replace(/\s+/g," ").trim();
+   }catch(_){return ""}
  }
 
- window.actualizarMapaV32=function(){
-   try{
-     if(typeof initRineMap==="function") initRineMap();
+ function mapSecCas(){
+  try{
+   if(typeof initRineMap==="function")initRineMap();
+   const map=window.rineMap||rineMap, sl=window.seccionLayer||seccionLayer, cl=window.casillaLayer||casillaLayer;
+   if(!map||!sl||!cl)return;
+   const sn=parseInt(String(E("regSeccion")?.value||"").replace(/\D/g,""),10);
+   if(!Number.isFinite(sn))return;
 
-     // IMPORTANTE: rineMap, seccionLayer y casillaLayer son variables globales "let",
-     // no window.*, por eso V30/V31 podían salir sin dibujar nada.
-     if(typeof rineMap==="undefined" || !rineMap ||
-        typeof seccionLayer==="undefined" || !seccionLayer ||
-        typeof casillaLayer==="undefined" || !casillaLayer) return false;
-
-     const sn=secNum();
-     if(sn===null) return false;
-
-     casillaLayer.clearLayers();
-     if(typeof homeMarker!=="undefined" && homeMarker){
-       try{rineMap.removeLayer(homeMarker)}catch(_){}
-       homeMarker=null;
+   cl.clearLayers();
+   let selected=null;
+   sl.eachLayer(l=>{
+     const cur=Number(l.feature?.properties?.SECCION)===sn;
+     try{l.unbindTooltip()}catch(_){}
+     if(cur){
+       selected=l;
+       l.setStyle({color:"#111",weight:4,opacity:1,fill:true,fillColor:"#fff",fillOpacity:.22});
+       l.bindTooltip("SECCIÓN "+sn,{permanent:true,direction:"center",className:"section-number-label"}).openTooltip();
+       try{l.bringToFront()}catch(_){}
+     }else{
+       l.setStyle({color:"#999",weight:.65,opacity:.32,fill:false,fillOpacity:0});
      }
+   });
 
-     let seleccion=null;
-     seccionLayer.eachLayer(function(l){
-       const n=Number(l.feature && l.feature.properties && l.feature.properties.SECCION);
-       const actual=n===sn;
-       try{l.unbindTooltip()}catch(_){}
-       if(actual){
-         seleccion=l;
-         l.setStyle({
-           color:"#111111",weight:4,opacity:1,
-           fill:true,fillColor:"#ffffff",fillOpacity:.22
-         });
-         l.bindTooltip("SECCIÓN "+sn,{
-           permanent:true,direction:"center",className:"section-number-label"
-         }).openTooltip();
-         try{l.bringToFront()}catch(_){}
-       }else{
-         l.setStyle({color:"#777",weight:.6,opacity:.18,fill:false,fillOpacity:0});
-       }
-     });
-
-     const cas=typeof casillasPorSeccion==="function"?casillasPorSeccion(sn):[];
-     const pts=[];
-     let cards="";
-     cas.forEach(function(c){
-       const lat=Number(c.lat),lon=Number(c.lon);
-       cards+='<div class="casillaCard"><b>Sección '+sn+' · Casilla '+escMap(c.casillas||"")+
-         '</b>'+escMap(c.ubicacion||"")+'<br>'+escMap(c.domicilio||"")+
-         (c.referencia?'<br><small>Referencia: '+escMap(c.referencia)+'</small>':'')+'</div>';
-
-       if(Number.isFinite(lat)&&Number.isFinite(lon)){
-         // circleMarker evita cualquier problema de iconos Leaflet en GitHub Pages/iPhone.
-         const mk=L.circleMarker([lat,lon],{
-           radius:9,color:"#111",weight:2,fillColor:"#168447",fillOpacity:1,
-           _rineCasillaV32:true
-         }).addTo(casillaLayer);
-         mk.bindPopup("<b>SECCIÓN "+sn+" · CASILLA "+escMap(c.casillas||"")+"</b><br>"+
-                      escMap(c.ubicacion||"")+"<br>"+escMap(c.domicilio||"")+
-                      (c.referencia?"<br><small>"+escMap(c.referencia)+"</small>":""));
-         pts.push([lat,lon]);
-       }
-     });
-
-     if(E("casillaInfo"))
-       E("casillaInfo").innerHTML=cards||'<div class="casillaCard">No hay casillas cargadas para la sección '+sn+'.</div>';
-
-     if(seleccion){
-       rineMap.fitBounds(seleccion.getBounds(),{padding:[38,38],maxZoom:15});
-     }else if(pts.length){
-       rineMap.fitBounds(L.latLngBounds(pts),{padding:[38,38],maxZoom:15});
+   const cs=typeof casillasPorSeccion==="function"?casillasPorSeccion(sn):[];
+   const pts=[]; let cards="";
+   cs.forEach(c=>{
+     const lat=Number(c.lat),lon=Number(c.lon);
+     cards+=`<div class="casillaCard"><b>Sección ${sn} · Casilla ${escMap(c.casillas)}</b>${escMap(c.ubicacion)}<br>${escMap(c.domicilio)}${c.referencia?`<br><small>Referencia: ${escMap(c.referencia)}</small>`:""}</div>`;
+     if(Number.isFinite(lat)&&Number.isFinite(lon)){
+       const m=L.circleMarker([lat,lon],{radius:9,color:"#111",weight:2,fillColor:"#168447",fillOpacity:1}).addTo(cl);
+       m.bindPopup(`<b>SECCIÓN ${sn} · CASILLA ${escMap(c.casillas)}</b><br>${escMap(c.ubicacion)}<br>${escMap(c.domicilio)}`);
+       pts.push([lat,lon]);
      }
+   });
+   if(E("casillaInfo"))E("casillaInfo").innerHTML=cards||`<div class="casillaCard">No hay casillas cargadas para la sección ${sn}.</div>`;
+   if(selected)map.fitBounds(selected.getBounds(),{padding:[25,25],maxZoom:15});
+   else if(pts.length)map.fitBounds(L.latLngBounds(pts),{padding:[25,25],maxZoom:15});
+   if(E("mapStatus"))E("mapStatus").textContent=selected
+     ?`Sección ${sn} localizada · ${cs.length} ubicación(es) de casilla.`
+     :`La sección ${sn} no está en la cartografía cargada.`;
+   setTimeout(()=>map.invalidateSize(),120);
+  }catch(e){if(E("mapStatus"))E("mapStatus").textContent="Mapa: "+e.message}
+ }
 
-     if(E("mapStatus")){
-       E("mapStatus").textContent=seleccion
-        ?"Sección "+sn+" ubicada · "+cas.length+" ubicación(es) de casilla."
-        :"Sección "+sn+" sin polígono; "+cas.length+" ubicación(es) de casilla disponibles.";
-     }
-     setTimeout(()=>rineMap.invalidateSize(),100);
-     return true;
-   }catch(e){
-     if(E("mapStatus"))E("mapStatus").textContent="Error al cargar sección/casillas: "+e.message;
-     return false;
-   }
- };
-
- // Interceptar fillRegistration al final de todos los parches anteriores.
- if(typeof fillRegistration==="function"){
-   const prev=fillRegistration;
-   fillRegistration=function(data){
-     prev(data);
-     setTimeout(window.actualizarMapaV32,150);
-     setTimeout(window.actualizarMapaV32,800);
+ // Hook the real fillRegistration instead of relying only on DOM events.
+ if(typeof window.fillRegistration==="function"){
+   const old=window.fillRegistration;
+   window.fillRegistration=function(data){
+     // Preserve front OCR name; never let MRZ truncate a valid surname.
+     const nf=nombreFrontalReforzado();
+     if(nf && (!data.nombreCompleto || nf.length>=String(data.nombreCompleto).length))data.nombreCompleto=nf;
+     old(data);
+     setTimeout(mapSecCas,250);
+     setTimeout(mapSecCas,900);
    };
  }
 
- const sec=E("regSeccion");
- if(sec){
-   sec.addEventListener("input",()=>setTimeout(window.actualizarMapaV32,80));
-   sec.addEventListener("change",()=>setTimeout(window.actualizarMapaV32,80));
- }
-
- // Vigilar el valor porque asignar input.value por JS no dispara input/change.
- let last="";
- setInterval(function(){
+ // Keep map synchronized even when another older patch changes the field later.
+ let prev="";
+ setInterval(()=>{
    const v=String(E("regSeccion")?.value||"");
-   if(v && v!==last){last=v;window.actualizarMapaV32();}
+   if(v && v!==prev){prev=v;mapSecCas();}
  },500);
-
- setTimeout(window.actualizarMapaV32,700);
+ window.actualizarMapaV32=mapSecCas;
+ setTimeout(mapSecCas,1000);
 })();
 </script>
 
