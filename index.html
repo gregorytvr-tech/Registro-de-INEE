@@ -568,9 +568,10 @@ async function localFrontOcr(file){
  try{
    // V29: procesamiento secuencial para reducir drásticamente el uso de memoria en iOS.
    const a=await readRegion(1.15,null,'6','lectura general');
-   const b=await readRegion(2.35,{x:.20,y:.22,w:.64,h:.38},'6','leyendo nombre');
-   // V35: segundo pase más cerrado y con mayor escala. Se ejecuta en serie para iPhone.
-   const b2=await readRegion(3.15,{x:.27,y:.255,w:.57,h:.285},'6','verificando nombre');
+   const b=await readRegion(2.0,{x:.22,y:.24,w:.58,h:.36},'6','leyendo nombre');
+   // V36: dos verificaciones EXCLUSIVAS del bloque NOMBRE. No cambian domicilio ni mapa.
+   const b2=await readRegion(2.65,{x:.25,y:.255,w:.54,h:.315},'6','verificando nombre');
+   const b3=await readRegion(3.0,{x:.275,y:.27,w:.50,h:.285},'6','confirmando nombre');
    const c=await readRegion(2.2,{x:.27,y:.48,w:.69,h:.44},'6','leyendo datos');
    const d=await readRegion(2.6,{x:.54,y:.64,w:.42,h:.28},'6','leyendo vigencia');
    // En móviles evitamos tres OCR de alta resolución simultáneos/redundantes.
@@ -598,9 +599,9 @@ async function localFrontOcr(file){
    return {
      available:true,
      text:a.text,
-     nameText:[b.text,b2.text].filter(Boolean).join('\n'),
-     nameTextPrimary:b.text,
-     nameTextTight:b2.text,
+     nameText:b.text,
+     nameTextAlt1:b2.text,
+     nameTextAlt2:b3.text,
      lowerText:c.text,
      bottomText:c.text,
      vigenciaText:d.text,
@@ -610,7 +611,7 @@ async function localFrontOcr(file){
      lowerIdsText:c.text,
      fieldText:[c.text,addrText].join('\n'),
      confidence:{
-       general:a.confidence,nombre:b.confidence,datos:c.confidence,
+       general:a.confidence,nombre:Math.max(b.confidence,b2.confidence,b3.confidence),datos:c.confidence,
        inferior:c.confidence,vigencia:d.confidence,
        campos:Math.max(c.confidence,e.confidence,f.confidence,g.confidence)
      }
@@ -681,6 +682,57 @@ function extractVigenciaStrict(text){
 }
 function cleanLine(x){return String(x||'').replace(/[|_~`^*{}\[\]]/g,' ').replace(/\s+/g,' ').trim();}
 function normalizeDigits(v){return String(v||'').replace(/[OoQ]/g,'0').replace(/[Il|]/g,'1').replace(/[^0-9]/g,'');}
+
+function extractNameCandidateV36(raw){
+  const lines=String(raw||'').split(/\n+/).map(cleanLine).filter(Boolean);
+  const stop=/^(DOMICILIO|CLAVE|ELECTOR|CURP|SECCI|VIGENCIA|FECHA|NACIMIENTO|SEXO|ESTADO|MUNICIPIO|LOCALIDAD|AÑO|EMISI|CREDENCIAL|INSTITUTO|NACIONAL|MÉXICO|MEXICO)/i;
+  let ix=lines.findIndex(x=>/^NOM(?:BRE|BRES|8RE|8RES)\b/i.test(x)), parts=[];
+  if(ix>=0){
+    let first=lines[ix].replace(/^NOM(?:BRE|BRES|8RE|8RES)\s*[:.\-]?\s*/i,'').trim();
+    if(first&&!stop.test(first))parts.push(first);
+    for(let i=ix+1;i<Math.min(lines.length,ix+5);i++){
+      let z=lines[i].trim(); if(stop.test(z))break;
+      z=z.replace(/[^A-ZÁÉÍÓÚÜÑ' -]/gi,' ').replace(/\s+/g,' ').trim();
+      if(z.length>=2&&z.length<=38&&!/\d/.test(z))parts.push(z);
+      if(parts.length>=3)break;
+    }
+  } else {
+    // En recortes muy cerrados la palabra NOMBRE puede quedar fuera: aceptar sólo 3 líneas alfabéticas limpias.
+    const good=lines.map(z=>z.replace(/[^A-ZÁÉÍÓÚÜÑ' -]/gi,' ').replace(/\s+/g,' ').trim())
+      .filter(z=>z.length>=2&&z.length<=38&&!stop.test(z)&&!/\d/.test(z));
+    if(good.length>=3)parts=good.slice(0,3);
+  }
+  return parts.join(' ').replace(/\s+/g,' ').trim().toUpperCase();
+}
+function chooseNameV36(candidates,curp){
+  const C=String(curp||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+  const expected=C.length>=4?[C[0],C[2],C[3]]:[];
+  const clean=v=>String(v||'').normalize("NFD").replace(/[\u0300-\u036f]/g,'').toUpperCase()
+    .replace(/[^A-ZÑ' -]/g,' ').replace(/\s+/g,' ').trim();
+  let best="",bestScore=-999;
+  for(const raw of candidates){
+    let n=clean(raw); if(!n)continue;
+    let tok=n.split(' ').filter(Boolean);
+    // Si hay ruido pegado ANTES de la inicial CURP, recortar hasta esa inicial, sin inventar letras.
+    if(expected[0]&&tok[0]&&tok[0][0]!==expected[0]){
+      const p=tok[0].indexOf(expected[0]);
+      if(p>0&&p<=3&&tok[0].length-p>=2)tok[0]=tok[0].slice(p);
+    }
+    n=tok.join(' ');
+    let sc=0;
+    if(tok.length>=4)sc+=5; else if(tok.length>=3)sc+=3;
+    if(expected.length){
+      if(tok[0]?.[0]===expected[0])sc+=8; else sc-=8;
+      if(tok[1]?.[0]===expected[1])sc+=7; else sc-=5;
+      if(tok[2]?.[0]===expected[2])sc+=6; else sc-=4;
+    }
+    if(tok.some(x=>x.length<2))sc-=3;
+    if(n.length>=12&&n.length<=55)sc+=2;
+    if(sc>bestScore){bestScore=sc;best=n;}
+  }
+  return best;
+}
+
 function extractLocalFields(text,nameText='',lowerText='',bottomText=''){
  const all=[text,nameText,lowerText,bottomText].join('\n').replace(/\r/g,'\n');
  const t=all.replace(/[ \t]+/g,' '); let seccion='',vigencia='',nombreCompleto='',curp='',claveElector='',fechaNacimiento='',genero='',direccion='';
@@ -1040,41 +1092,6 @@ function fileToDataURL(file){
   reader.readAsDataURL(file);
  });
 }
-
-function v35NameTokens(s){
- return String(s||"").toUpperCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"")
-  .replace(/[^A-ZÑ\s'-]/g," ").replace(/\s+/g," ").trim().split(/\s+/).filter(Boolean);
-}
-function v35NameScore(name,curp,clave){
- const p=v35NameTokens(name), c=String(curp||"").toUpperCase().replace(/[^A-Z0-9]/g,"");
- const k=String(clave||"").toUpperCase().replace(/[^A-Z0-9]/g,"");
- if(p.length<3) return -50;
- let s=0;
- // CURP: 1a letra apellido paterno, 3a apellido materno, 4a primer nombre.
- if(c.length>=4){
-   if(p[0]?.[0]===c[0]) s+=12; else s-=12;
-   if(p[1]?.[0]===c[2]) s+=9; else s-=8;
-   if(p[2]?.[0]===c[3]) s+=9; else s-=8;
-   // Primera vocal interna del apellido paterno (CURP[1]).
-   const v=(p[0].slice(1).match(/[AEIOU]/)||[])[0]||"";
-   if(v && v===c[1]) s+=6;
- }
- // La clave de elector suele aportar consonantes/iniciales útiles como respaldo.
- if(k.length>=4){
-   if(p[0]?.[0]===k[0]) s+=4;
-   if(p[1]?.[0]===k[2]) s+=3;
- }
- if(p.every(x=>x.length>=2)) s+=3;
- if(p.length>=4) s+=2;
- return s;
-}
-function v35PickName(frontName,mrzName,curp,clave){
- const candidates=[frontName,mrzName].map(x=>String(x||"").trim()).filter(Boolean);
- if(!candidates.length) return "";
- candidates.sort((a,b)=>v35NameScore(b,curp,clave)-v35NameScore(a,curp,clave));
- return candidates[0];
-}
-
 $("realBtn").onclick=async()=>{
  const btn=$("realBtn"), frontFile=$("frontFile").files[0], backFile=$("backFile").files[0];
  if(!frontFile){$("status").textContent="Selecciona al menos la imagen del frente de la INE.";return;}
@@ -1095,9 +1112,17 @@ $("realBtn").onclick=async()=>{
    const v24=extractV24Fields(localFront);
    for(const k of ['curp','claveElector','fechaNacimiento','genero','direccion','calle','colonia','codigoPostal','cic','identificadorCiudadano']) if(v24[k]) lf[k]=v24[k];
    const mrz=parseMrz(backMrz.text||'');
-   // V35: no se corrige el apellido inventando letras. Se compara el nombre del frente
-   // contra el MRZ y se elige el que estructuralmente coincide mejor con CURP/clave.
-   lf.nombreCompleto=v35PickName(lf.nombreCompleto,mrz.name,lf.curp,lf.claveElector);
+   // V36: el reverso ya NO reemplaza automáticamente el nombre del frente.
+   // Se comparan tres lecturas del frente + MRZ y se valida su estructura con CURP.
+   const nameCandidates=[
+     extractNameCandidateV36(localFront.nameText||''),
+     extractNameCandidateV36(localFront.nameTextAlt1||''),
+     extractNameCandidateV36(localFront.nameTextAlt2||''),
+     lf.nombreCompleto||'',
+     mrz.name||''
+   ].filter(Boolean);
+   const nombreV36=chooseNameV36(nameCandidates,lf.curp||'');
+   if(nombreV36) lf.nombreCompleto=nombreV36;
    // Sección: frente con etiqueta tiene prioridad; MRZ es respaldo.
    let seccionFinal=/^\d{4}$/.test(String(lf.seccion||'')) ? String(lf.seccion) : '';
    let seccionFuente=seccionFinal ? 'etiqueta SECCIÓN del frente' : '';
@@ -1136,7 +1161,7 @@ $("realBtn").onclick=async()=>{
      textoOcrVigencia:localFront.vigenciaText||'',
      textoOcrLocal:localFront.text,
      textoOcrMRZ:backMrz.text||"",
-     nombreFuente:mrz.name?"MRZ reverso":(lf.nombreCompleto?"zona NOMBRE del frente":"no detectado"),
+     nombreFuente:lf.nombreCompleto?"selección V36: frente multipase + validación CURP/MRZ":"no detectado",
      seccionFuente:seccionFuente||"no detectada",
      vigenciaFuente:vigenciaFinal?"OCR multipase dedicado a VIGENCIA":"no detectada / rechazada por validador",
      lineaMrzNombre:mrz.lineaNombre||"",
@@ -2253,212 +2278,6 @@ box-shadow:0 2px 7px rgba(0,0,0,.18)!important;border-radius:7px!important;paddi
   }
 
   setTimeout(actualizarTodo,1200);
-})();
-</script>
-
-
-<style id="v32-map-label">
-.section-number-label{background:rgba(255,255,255,.92)!important;border:2px solid #111!important;
-box-shadow:none!important;font-weight:900!important;color:#111!important;font-size:14px!important}
-</style>
-<script id="v32-nombre-mapa">
-(function(){
- const E=id=>document.getElementById(id);
-
- function cleanNameLine(s){
-   return String(s||"").toUpperCase()
-    .replace(/[|_[\]{}()]/g," ")
-    .replace(/[^A-ZÁÉÍÓÚÜÑ\s'-]/g," ")
-    .replace(/\s+/g," ").trim();
- }
- function plausible(s){
-   if(!s||s.length<2)return false;
-   return !/^(NOMBRE|DOMICILIO|CLAVE|ELECTOR|CURP|SECCION|SECCIÓN|VIGENCIA|SEXO|FECHA|NACIMIENTO|MEXICO|MÉXICO|INSTITUTO|NACIONAL|ELECTORAL)$/.test(s);
- }
- function nombreFrontalReforzado(){
-   try{
-     // Reuse every front OCR pass already produced by the app.
-     const pool=[
-       window.__lastLocalFront?.nameText,
-       window.__lastLocalFront?.text,
-       window.__lastLocalFront?.identityText,
-       window.__lastLocalFront?.generalText
-     ].filter(Boolean).join("\n");
-     if(!pool)return "";
-     const raw=pool.split(/\n+/).map(cleanNameLine).filter(Boolean);
-     let start=raw.findIndex(x=>/^NOMBRE\b/.test(x));
-     let lines=[];
-     if(start>=0){
-       const first=cleanNameLine(raw[start].replace(/^NOMBRE\s*/,""));
-       if(plausible(first))lines.push(first);
-       for(let i=start+1;i<Math.min(raw.length,start+6);i++){
-         if(/^(DOMICILIO|CLAVE|CURP|SECCION|SECCIÓN|FECHA|SEXO|VIGENCIA)\b/.test(raw[i]))break;
-         if(plausible(raw[i]))lines.push(raw[i]);
-         if(lines.length>=3)break;
-       }
-     }
-     // INE normally prints surname(s) and given name(s) as separate lines.
-     return lines.join(" ").replace(/\s+/g," ").trim();
-   }catch(_){return ""}
- }
-
- function mapSecCas(){
-  try{
-   if(typeof initRineMap==="function")initRineMap();
-   const map=window.rineMap||rineMap, sl=window.seccionLayer||seccionLayer, cl=window.casillaLayer||casillaLayer;
-   if(!map||!sl||!cl)return;
-   const sn=parseInt(String(E("regSeccion")?.value||"").replace(/\D/g,""),10);
-   if(!Number.isFinite(sn))return;
-
-   cl.clearLayers();
-   let selected=null;
-   sl.eachLayer(l=>{
-     const cur=Number(l.feature?.properties?.SECCION)===sn;
-     try{l.unbindTooltip()}catch(_){}
-     if(cur){
-       selected=l;
-       l.setStyle({color:"#111",weight:4,opacity:1,fill:true,fillColor:"#fff",fillOpacity:.22});
-       l.bindTooltip("SECCIÓN "+sn,{permanent:true,direction:"center",className:"section-number-label"}).openTooltip();
-       try{l.bringToFront()}catch(_){}
-     }else{
-       l.setStyle({color:"#999",weight:.65,opacity:.32,fill:false,fillOpacity:0});
-     }
-   });
-
-   const cs=typeof casillasPorSeccion==="function"?casillasPorSeccion(sn):[];
-   const pts=[]; let cards="";
-   cs.forEach(c=>{
-     const lat=Number(c.lat),lon=Number(c.lon);
-     cards+=`<div class="casillaCard"><b>Sección ${sn} · Casilla ${escMap(c.casillas)}</b>${escMap(c.ubicacion)}<br>${escMap(c.domicilio)}${c.referencia?`<br><small>Referencia: ${escMap(c.referencia)}</small>`:""}</div>`;
-     if(Number.isFinite(lat)&&Number.isFinite(lon)){
-       const m=L.circleMarker([lat,lon],{radius:9,color:"#111",weight:2,fillColor:"#168447",fillOpacity:1}).addTo(cl);
-       m.bindPopup(`<b>SECCIÓN ${sn} · CASILLA ${escMap(c.casillas)}</b><br>${escMap(c.ubicacion)}<br>${escMap(c.domicilio)}`);
-       pts.push([lat,lon]);
-     }
-   });
-   if(E("casillaInfo"))E("casillaInfo").innerHTML=cards||`<div class="casillaCard">No hay casillas cargadas para la sección ${sn}.</div>`;
-   if(selected)map.fitBounds(selected.getBounds(),{padding:[25,25],maxZoom:15});
-   else if(pts.length)map.fitBounds(L.latLngBounds(pts),{padding:[25,25],maxZoom:15});
-   if(E("mapStatus"))E("mapStatus").textContent=selected
-     ?`Sección ${sn} localizada · ${cs.length} ubicación(es) de casilla.`
-     :`La sección ${sn} no está en la cartografía cargada.`;
-   setTimeout(()=>map.invalidateSize(),120);
-  }catch(e){if(E("mapStatus"))E("mapStatus").textContent="Mapa: "+e.message}
- }
-
- // Hook the real fillRegistration instead of relying only on DOM events.
- if(typeof window.fillRegistration==="function"){
-   const old=window.fillRegistration;
-   window.fillRegistration=function(data){
-     // Preserve front OCR name; never let MRZ truncate a valid surname.
-     const nf=nombreFrontalReforzado();
-     if(nf && (!data.nombreCompleto || nf.length>=String(data.nombreCompleto).length))data.nombreCompleto=nf;
-     old(data);
-     setTimeout(mapSecCas,250);
-     setTimeout(mapSecCas,900);
-   };
- }
-
- // Keep map synchronized even when another older patch changes the field later.
- let prev="";
- setInterval(()=>{
-   const v=String(E("regSeccion")?.value||"");
-   if(v && v!==prev){prev=v;mapSecCas();}
- },500);
- window.actualizarMapaV32=mapSecCas;
- setTimeout(mapSecCas,1000);
-})();
-</script>
-
-
-<script id="v33-solo-nombre-ocr">
-(function(){
-  const E=id=>document.getElementById(id);
-
-  function limpiarLineaNombre(s){
-    return String(s||"").toUpperCase()
-      .normalize("NFD").replace(/[\u0300-\u036f]/g,"")
-      .replace(/[^A-ZÑ\s'-]/g," ")
-      .replace(/\s+/g," ").trim();
-  }
-
-  function corregirRuidoEtiquetaNombre(nombre){
-    let s=limpiarLineaNombre(nombre);
-    // Corrección genérica del artefacto observado: una letra residual de la etiqueta
-    // NOMBRE puede quedar pegada al inicio del primer apellido.
-    // Sólo se aplica cuando el resto del nombre coincide mejor con la información
-    // estructurada de CURP/clave de elector.
-    const curp=String(E("regCurp")?.value||"").toUpperCase().replace(/[^A-Z0-9]/g,"");
-    const clave=String(E("regClave")?.value||E("regClaveElector")?.value||"").toUpperCase().replace(/[^A-Z0-9]/g,"");
-    const parts=s.split(/\s+/).filter(Boolean);
-    if(!parts.length) return s;
-
-    // Inicial esperada del primer apellido: CURP[0] y, como respaldo, clave de elector[0].
-    const inicial=(curp.match(/^[A-Z]/)||clave.match(/^[A-Z]/)||[])[0]||"";
-    if(inicial && parts[0].length>=4 && parts[0][0]!==inicial && parts[0][1]===inicial){
-      parts[0]=parts[0].slice(1);
-    }
-    return parts.join(" ");
-  }
-
-  function aplicar(){
-    const el=E("regNombre");
-    if(!el || !el.value) return;
-    const antes=el.value;
-    const despues=corregirRuidoEtiquetaNombre(antes);
-    if(despues && despues!==antes) el.value=despues;
-  }
-
-  // No toca mapa, sección, casillas ni vigencia.
-  setInterval(aplicar,450);
-  document.addEventListener("change",e=>{
-    if(e.target && (e.target.id==="regNombre" || e.target.id==="regCurp")) aplicar();
-  },true);
-})();
-</script>
-
-
-<script id="v34-correccion-prefijo-nombre">
-(function(){
-  const E=id=>document.getElementById(id);
-
-  function corregir(){
-    const nombre=E("regNombre");
-    const curp=E("regCurp");
-    if(!nombre || !curp || !nombre.value || !curp.value) return;
-
-    let texto=String(nombre.value).toUpperCase().trim().replace(/\s+/g," ");
-    const c=String(curp.value).toUpperCase().replace(/[^A-Z0-9]/g,"");
-    if(!/^[A-Z]/.test(c)) return;
-
-    const inicial=c[0];
-    const partes=texto.split(" ");
-    if(!partes.length) return;
-
-    const apellido=partes[0];
-    // El primer apellido debe comenzar con la misma inicial que la CURP.
-    // Si OCR antepone 1-3 caracteres (ELOPEZ, NELOPEZ, etc.), los elimina
-    // hasta la primera aparición razonable de la inicial correcta.
-    if(apellido[0] !== inicial){
-      const p=apellido.indexOf(inicial);
-      if(p>0 && p<=3 && apellido.length-p>=4){
-        partes[0]=apellido.slice(p);
-        nombre.value=partes.join(" ");
-        nombre.dispatchEvent(new Event("change",{bubbles:true}));
-      }
-    }
-  }
-
-  // Se ejecuta después de que los distintos pases OCR terminan de escribir.
-  let ultimo="";
-  setInterval(()=>{
-    const actual=(E("regNombre")?.value||"")+"|"+(E("regCurp")?.value||"");
-    if(actual && actual!==ultimo){ ultimo=actual; corregir(); }
-  },300);
-
-  document.addEventListener("input",e=>{
-    if(e.target?.id==="regNombre" || e.target?.id==="regCurp") setTimeout(corregir,20);
-  },true);
 })();
 </script>
 
