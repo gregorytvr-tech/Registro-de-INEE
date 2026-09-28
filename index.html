@@ -568,7 +568,9 @@ async function localFrontOcr(file){
  try{
    // V29: procesamiento secuencial para reducir drásticamente el uso de memoria en iOS.
    const a=await readRegion(1.15,null,'6','lectura general');
-   const b=await readRegion(2.0,{x:.22,y:.24,w:.58,h:.36},'6','leyendo nombre');
+   const b=await readRegion(2.35,{x:.20,y:.22,w:.64,h:.38},'6','leyendo nombre');
+   // V35: segundo pase más cerrado y con mayor escala. Se ejecuta en serie para iPhone.
+   const b2=await readRegion(3.15,{x:.27,y:.255,w:.57,h:.285},'6','verificando nombre');
    const c=await readRegion(2.2,{x:.27,y:.48,w:.69,h:.44},'6','leyendo datos');
    const d=await readRegion(2.6,{x:.54,y:.64,w:.42,h:.28},'6','leyendo vigencia');
    // En móviles evitamos tres OCR de alta resolución simultáneos/redundantes.
@@ -596,7 +598,9 @@ async function localFrontOcr(file){
    return {
      available:true,
      text:a.text,
-     nameText:b.text,
+     nameText:[b.text,b2.text].filter(Boolean).join('\n'),
+     nameTextPrimary:b.text,
+     nameTextTight:b2.text,
      lowerText:c.text,
      bottomText:c.text,
      vigenciaText:d.text,
@@ -1036,6 +1040,41 @@ function fileToDataURL(file){
   reader.readAsDataURL(file);
  });
 }
+
+function v35NameTokens(s){
+ return String(s||"").toUpperCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"")
+  .replace(/[^A-ZÑ\s'-]/g," ").replace(/\s+/g," ").trim().split(/\s+/).filter(Boolean);
+}
+function v35NameScore(name,curp,clave){
+ const p=v35NameTokens(name), c=String(curp||"").toUpperCase().replace(/[^A-Z0-9]/g,"");
+ const k=String(clave||"").toUpperCase().replace(/[^A-Z0-9]/g,"");
+ if(p.length<3) return -50;
+ let s=0;
+ // CURP: 1a letra apellido paterno, 3a apellido materno, 4a primer nombre.
+ if(c.length>=4){
+   if(p[0]?.[0]===c[0]) s+=12; else s-=12;
+   if(p[1]?.[0]===c[2]) s+=9; else s-=8;
+   if(p[2]?.[0]===c[3]) s+=9; else s-=8;
+   // Primera vocal interna del apellido paterno (CURP[1]).
+   const v=(p[0].slice(1).match(/[AEIOU]/)||[])[0]||"";
+   if(v && v===c[1]) s+=6;
+ }
+ // La clave de elector suele aportar consonantes/iniciales útiles como respaldo.
+ if(k.length>=4){
+   if(p[0]?.[0]===k[0]) s+=4;
+   if(p[1]?.[0]===k[2]) s+=3;
+ }
+ if(p.every(x=>x.length>=2)) s+=3;
+ if(p.length>=4) s+=2;
+ return s;
+}
+function v35PickName(frontName,mrzName,curp,clave){
+ const candidates=[frontName,mrzName].map(x=>String(x||"").trim()).filter(Boolean);
+ if(!candidates.length) return "";
+ candidates.sort((a,b)=>v35NameScore(b,curp,clave)-v35NameScore(a,curp,clave));
+ return candidates[0];
+}
+
 $("realBtn").onclick=async()=>{
  const btn=$("realBtn"), frontFile=$("frontFile").files[0], backFile=$("backFile").files[0];
  if(!frontFile){$("status").textContent="Selecciona al menos la imagen del frente de la INE.";return;}
@@ -1056,7 +1095,9 @@ $("realBtn").onclick=async()=>{
    const v24=extractV24Fields(localFront);
    for(const k of ['curp','claveElector','fechaNacimiento','genero','direccion','calle','colonia','codigoPostal','cic','identificadorCiudadano']) if(v24[k]) lf[k]=v24[k];
    const mrz=parseMrz(backMrz.text||'');
-   if(mrz.name && !lf.nombreCompleto) lf.nombreCompleto=mrz.name;
+   // V35: no se corrige el apellido inventando letras. Se compara el nombre del frente
+   // contra el MRZ y se elige el que estructuralmente coincide mejor con CURP/clave.
+   lf.nombreCompleto=v35PickName(lf.nombreCompleto,mrz.name,lf.curp,lf.claveElector);
    // Sección: frente con etiqueta tiene prioridad; MRZ es respaldo.
    let seccionFinal=/^\d{4}$/.test(String(lf.seccion||'')) ? String(lf.seccion) : '';
    let seccionFuente=seccionFinal ? 'etiqueta SECCIÓN del frente' : '';
