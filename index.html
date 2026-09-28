@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>REGISTRO DE INE · V28</title>
+<title>REGISTRO DE INE · V29 MÓVIL</title>
 <style>
 :root{--bg:#f5f7f8;--card:#fff;--ink:#15202b;--muted:#667085;--green:#16845b;--line:#e4e7ec;--danger:#b42318}
 *{box-sizing:border-box}body{margin:0;font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:var(--bg);color:var(--ink)}
@@ -503,14 +503,41 @@ function updateModelStatus(data,scan){
 }
 
 async function imageToCanvas(file, scale=2.2, crop=null){
- const img=await new Promise((resolve,reject)=>{const i=new Image();i.onload=()=>resolve(i);i.onerror=reject;i.src=URL.createObjectURL(file);});
- const sx=crop?Math.round(img.naturalWidth*crop.x):0, sy=crop?Math.round(img.naturalHeight*crop.y):0;
- const sw=crop?Math.round(img.naturalWidth*crop.w):img.naturalWidth, sh=crop?Math.round(img.naturalHeight*crop.h):img.naturalHeight;
- const c=document.createElement('canvas'); c.width=Math.round(sw*scale); c.height=Math.round(sh*scale);
- const ctx=c.getContext('2d',{willReadFrequently:true}); ctx.drawImage(img,sx,sy,sw,sh,0,0,c.width,c.height);
- const im=ctx.getImageData(0,0,c.width,c.height), d=im.data;
- for(let i=0;i<d.length;i+=4){ const g=.299*d[i]+.587*d[i+1]+.114*d[i+2]; const v=g>165?255:(g<80?0:Math.max(0,Math.min(255,(g-80)*3))); d[i]=d[i+1]=d[i+2]=v; }
- ctx.putImageData(im,0,0); return c;
+ // V29 móvil: limita el tamaño del canvas para evitar que iPhone/iPad cierre la pestaña
+ // al procesar fotografías de 12/24/48 MP.
+ const url=URL.createObjectURL(file);
+ let img;
+ try{
+   img=await new Promise((resolve,reject)=>{
+     const i=new Image();
+     i.onload=()=>resolve(i);
+     i.onerror=()=>reject(new Error("No fue posible abrir la fotografía."));
+     i.src=url;
+   });
+   const sx=crop?Math.round(img.naturalWidth*crop.x):0, sy=crop?Math.round(img.naturalHeight*crop.y):0;
+   const sw=crop?Math.round(img.naturalWidth*crop.w):img.naturalWidth, sh=crop?Math.round(img.naturalHeight*crop.h):img.naturalHeight;
+
+   let cw=Math.max(1,Math.round(sw*scale)), ch=Math.max(1,Math.round(sh*scale));
+   const MAX_SIDE=2200, MAX_PIXELS=2600000;
+   const factor=Math.min(1,MAX_SIDE/Math.max(cw,ch),Math.sqrt(MAX_PIXELS/(cw*ch)));
+   cw=Math.max(1,Math.round(cw*factor)); ch=Math.max(1,Math.round(ch*factor));
+
+   const c=document.createElement('canvas'); c.width=cw; c.height=ch;
+   const ctx=c.getContext('2d',{willReadFrequently:true});
+   if(!ctx) throw new Error("El navegador no pudo crear el área de lectura OCR.");
+   ctx.drawImage(img,sx,sy,sw,sh,0,0,c.width,c.height);
+
+   const im=ctx.getImageData(0,0,c.width,c.height), d=im.data;
+   for(let i=0;i<d.length;i+=4){
+     const g=.299*d[i]+.587*d[i+1]+.114*d[i+2];
+     const v=g>165?255:(g<80?0:Math.max(0,Math.min(255,(g-80)*3)));
+     d[i]=d[i+1]=d[i+2]=v;
+   }
+   ctx.putImageData(im,0,0);
+   return c;
+ } finally {
+   URL.revokeObjectURL(url);
+ }
 }
 let ineOcrWorker=null;
 async function getIneOcrWorker(){
@@ -529,26 +556,25 @@ async function ocrCanvas(canvas, psm='6'){
 }
 async function localFrontOcr(file){
  if(!file || !window.Tesseract) return {available:false,text:'',reason:'OCR local no disponible'};
+ async function readRegion(scale,crop,psm='6',label=''){
+   if(label) $("status").textContent="OCR local: "+label+"…";
+   const canvas=await imageToCanvas(file,scale,crop);
+   try{ return await ocrCanvas(canvas,psm); }
+   finally{
+     // Liberar inmediatamente cada canvas antes de crear el siguiente.
+     canvas.width=1; canvas.height=1;
+   }
+ }
  try{
-   const full=await imageToCanvas(file,1.35);
-   const name=await imageToCanvas(file,2.4,{x:.22,y:.24,w:.58,h:.36});
-   const data=await imageToCanvas(file,2.8,{x:.27,y:.48,w:.69,h:.44});
-   const vig=await imageToCanvas(file,3.8,{x:.54,y:.64,w:.42,h:.28});
-   // Restauramos el recorte específico que ya funcionaba para domicilio.
-   const address=await imageToCanvas(file,4.8,{x:.24,y:.36,w:.68,h:.31});
-   const addressTight=await imageToCanvas(file,5.6,{x:.28,y:.38,w:.62,h:.28});
-   const addressLine=await imageToCanvas(file,6.2,{x:.27,y:.39,w:.60,h:.12});
+   // V29: procesamiento secuencial para reducir drásticamente el uso de memoria en iOS.
+   const a=await readRegion(1.15,null,'6','lectura general');
+   const b=await readRegion(2.0,{x:.22,y:.24,w:.58,h:.36},'6','leyendo nombre');
+   const c=await readRegion(2.2,{x:.27,y:.48,w:.69,h:.44},'6','leyendo datos');
+   const d=await readRegion(2.6,{x:.54,y:.64,w:.42,h:.28},'6','leyendo vigencia');
+   const e=await readRegion(2.8,{x:.24,y:.36,w:.68,h:.31},'6','leyendo domicilio');
+   const f=await readRegion(3.0,{x:.28,y:.38,w:.62,h:.28},'6','verificando domicilio');
+   const g=await readRegion(3.2,{x:.27,y:.39,w:.60,h:.12},'7','verificando calle y número');
 
-   // Se mantiene un único worker reutilizable. La pasada extra sólo es para domicilio.
-   const a=await ocrCanvas(full,'6');
-   const b=await ocrCanvas(name,'6');
-   const c=await ocrCanvas(data,'6');
-   const d=await ocrCanvas(vig,'6');
-   const e=await ocrCanvas(address,'6');
-   const f=await ocrCanvas(addressTight,'6');
-   const g=await ocrCanvas(addressLine,'7');
-
-   // Elegir la lectura de domicilio que tenga más señales útiles.
    function addrQuality(t){
      let q=0, x=String(t||"").toUpperCase();
      if(/\b(?:C|CALLE|CTO|CIRCUITO|AV|AVENIDA|PRIV|PRIVADA)\b/.test(x))q+=3;
@@ -558,8 +584,6 @@ async function localFrontOcr(file){
      return q;
    }
    let addrText=addrQuality(f.text)>addrQuality(e.text)?f.text:e.text;
-   // La línea dedicada suele reconocer mejor el número exterior; si contiene vía+número,
-   // úsala como primera línea y conserva colonia/CP de la lectura completa.
    const lineTxt=String(g.text||"").trim();
    if(/\b(?:C|CALLE|CTO|CIRCUITO|AV|AVENIDA|PRIV|PRIVADA)\b.*\d/i.test(lineTxt)){
      const rest=addrText.split(/\n+/).filter(z=>z.trim() && z.trim()!==lineTxt);
@@ -590,9 +614,13 @@ async function localBackMrzOcr(file){
  if(!file || !window.Tesseract) return {available:false,text:'',confidence:0};
  try{
    // En modelos con MRZ, las tres líneas están en la franja inferior del reverso.
-   const mrz=await imageToCanvas(file,3.4,{x:.06,y:.60,w:.90,h:.35});
-   const r=await ocrCanvas(mrz);
-   return {available:true,text:r.text,confidence:r.confidence};
+   const mrz=await imageToCanvas(file,2.8,{x:.06,y:.60,w:.90,h:.35});
+   try{
+     const r=await ocrCanvas(mrz);
+     return {available:true,text:r.text,confidence:r.confidence};
+   } finally {
+     mrz.width=1; mrz.height=1;
+   }
  }catch(e){ return {available:false,text:'',confidence:0,reason:e.message}; }
 }
 function parseMrz(text){
