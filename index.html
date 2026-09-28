@@ -1056,7 +1056,8 @@ $("realBtn").onclick=async()=>{
    const v24=extractV24Fields(localFront);
    for(const k of ['curp','claveElector','fechaNacimiento','genero','direccion','calle','colonia','codigoPostal','cic','identificadorCiudadano']) if(v24[k]) lf[k]=v24[k];
    const mrz=parseMrz(backMrz.text||'');
-   if(mrz.name) lf.nombreCompleto=mrz.name;
+   if(mrz.name && !lf.nombreCompleto) lf.nombreCompleto=mrz.name;
+// V31: el bloque NOMBRE del anverso tiene prioridad; MRZ sólo rescata si quedó vacío.
    // Sección: frente con etiqueta tiene prioridad; MRZ es respaldo.
    let seccionFinal=/^\d{4}$/.test(String(lf.seccion||'')) ? String(lf.seccion) : '';
    let seccionFuente=seccionFinal ? 'etiqueta SECCIÓN del frente' : '';
@@ -2212,6 +2213,57 @@ box-shadow:0 2px 7px rgba(0,0,0,.18)!important;border-radius:7px!important;paddi
   }
 
   setTimeout(actualizarTodo,1200);
+})();
+</script>
+
+
+<script id="v31-nombre-mapa-casillas">
+(function(){
+ const E=id=>document.getElementById(id);
+ function secActual(){const n=parseInt(String(E("regSeccion")?.value||"").replace(/\D/g,""),10);return Number.isFinite(n)?n:null;}
+ function mostrar(){
+  try{
+   if(typeof initRineMap==="function") initRineMap();
+   if(!window.rineMap||!window.seccionLayer||!window.casillaLayer)return;
+   const sn=secActual(); if(sn===null)return;
+   casillaLayer.clearLayers();
+   if(typeof homeMarker!=="undefined"&&homeMarker){try{rineMap.removeLayer(homeMarker)}catch(_){} homeMarker=null;}
+   let pol=null;
+   seccionLayer.eachLayer(l=>{
+    const es=Number(l.feature?.properties?.SECCION)===sn;
+    try{l.unbindTooltip()}catch(_){}
+    if(es){
+     pol=l;l.setStyle({color:"#111",weight:4,opacity:1,fill:true,fillColor:"#fff",fillOpacity:.18});
+     l.bindTooltip("SECCIÓN "+sn,{permanent:true,direction:"center",className:"section-number-label"}).openTooltip();
+     try{l.bringToFront()}catch(_){}
+    }else l.setStyle({color:"#aaa",weight:.55,opacity:.25,fill:false,fillOpacity:0});
+   });
+   const cas=typeof casillasPorSeccion==="function"?casillasPorSeccion(sn):[];
+   let cards="";
+   cas.forEach(c=>{
+    cards+='<div class="casillaCard"><b>Sección '+sn+' · Casilla '+escMap(c.casillas||"")+'</b>'+escMap(c.ubicacion||"")+'<br>'+escMap(c.domicilio||"")+(c.referencia?'<br><small>Referencia: '+escMap(c.referencia)+'</small>':'')+'</div>';
+    const lat=Number(c.lat),lon=Number(c.lon);
+    if(Number.isFinite(lat)&&Number.isFinite(lon)){
+     const mk=L.marker([lat,lon],{title:"Casilla sección "+sn,zIndexOffset:1500}).addTo(casillaLayer);
+     mk.bindPopup("<b>SECCIÓN "+sn+" · CASILLA "+escMap(c.casillas||"")+"</b><br>"+escMap(c.ubicacion||"")+"<br>"+escMap(c.domicilio||""));
+    }
+   });
+   if(E("casillaInfo"))E("casillaInfo").innerHTML=cards||'<div class="casillaCard">No hay casillas cargadas para la sección '+sn+'.</div>';
+   if(pol)rineMap.fitBounds(pol.getBounds(),{padding:[30,30],maxZoom:16});
+   if(E("mapStatus"))E("mapStatus").textContent=pol?"Sección "+sn+" ubicada · "+cas.length+" ubicación(es) de casilla.":"No se encontró el polígono de la sección "+sn+".";
+   setTimeout(()=>rineMap.invalidateSize(),100);
+  }catch(e){if(E("mapStatus"))E("mapStatus").textContent="Error de mapa: "+e.message}
+ }
+ window.mostrarSeccionYCasillasV31=mostrar;
+ const sec=E("regSeccion");
+ if(sec){
+  sec.addEventListener("change",()=>setTimeout(mostrar,50));
+  sec.addEventListener("input",()=>{clearTimeout(window.__v31);window.__v31=setTimeout(mostrar,180)});
+ }
+ // Detecta automáticamente cuándo el OCR termina de llenar la sección.
+ let ultimo="";
+ setInterval(()=>{const v=String(E("regSeccion")?.value||"");if(v&&v!==ultimo){ultimo=v;mostrar()}},700);
+ setTimeout(mostrar,900);
 })();
 </script>
 
