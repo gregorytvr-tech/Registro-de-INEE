@@ -341,8 +341,8 @@ main.wrap .card:nth-child(even){border-top:2px solid rgba(215,39,46,.10)!importa
 <div style="display:none"><label for="sandboxCase">Caso de Sandbox</label><select id="sandboxCase"><option value="sandbox-tipo-e-completo">Tipo E — completo</option></select></div>
 <div class="actions">
 
-<button id="realBtn"  class="primary">EJECUTAR</button>
-<button id="clearBtn" class="danger">LIMPIAR</button>
+<button id="realBtn" type="button" class="primary">EJECUTAR</button>
+<button id="clearBtn" type="button" class="danger">LIMPIAR</button>
 </div>
 <div id="status" class="status" style="display:none"></div>
 <div id="modelStatus" class="status" style="display:none"></div>
@@ -571,9 +571,12 @@ async function localFrontOcr(file){
    const b=await readRegion(2.0,{x:.22,y:.24,w:.58,h:.36},'6','leyendo nombre');
    const c=await readRegion(2.2,{x:.27,y:.48,w:.69,h:.44},'6','leyendo datos');
    const d=await readRegion(2.6,{x:.54,y:.64,w:.42,h:.28},'6','leyendo vigencia');
-   const e=await readRegion(2.8,{x:.24,y:.36,w:.68,h:.31},'6','leyendo domicilio');
-   const f=await readRegion(3.0,{x:.28,y:.38,w:.62,h:.28},'6','verificando domicilio');
-   const g=await readRegion(3.2,{x:.27,y:.39,w:.60,h:.12},'7','verificando calle y número');
+   // En móviles evitamos tres OCR de alta resolución simultáneos/redundantes.
+   // Esto reduce mucho el pico de memoria que puede cerrar la pestaña en iPhone/Chrome.
+   const mobile=/iPhone|iPad|iPod|Android/i.test(navigator.userAgent) || innerWidth<=720;
+   const e=await readRegion(mobile?2.15:2.8,{x:.24,y:.36,w:.68,h:.31},'6','leyendo domicilio');
+   const f=mobile ? {text:e.text,confidence:e.confidence} : await readRegion(3.0,{x:.28,y:.38,w:.62,h:.28},'6','verificando domicilio');
+   const g=mobile ? {text:'',confidence:0} : await readRegion(3.2,{x:.27,y:.39,w:.60,h:.12},'7','verificando calle y número');
 
    function addrQuality(t){
      let q=0, x=String(t||"").toUpperCase();
@@ -1042,7 +1045,12 @@ $("realBtn").onclick=async()=>{
  const t=performance.now();
  try{
    const localFront=await localFrontOcr(frontFile);
-   const [scan,backMrz]=backFile ? await Promise.all([detectBackCodes(backFile),localBackMrzOcr(backFile)]) : [null,{available:false,text:'',confidence:0}];
+   // En móvil se procesa el reverso en serie para no duplicar el uso de memoria.
+   let scan=null, backMrz={available:false,text:'',confidence:0};
+   if(backFile){
+     scan=await detectBackCodes(backFile);
+     backMrz=await localBackMrzOcr(backFile);
+   }
    if(!localFront.available) throw new Error(localFront.reason||"OCR local no disponible");
    const lf=extractLocalFields(localFront.text,localFront.nameText,localFront.lowerText,localFront.bottomText);
    const v24=extractV24Fields(localFront);
@@ -1098,7 +1106,11 @@ $("realBtn").onclick=async()=>{
  }catch(e){
    render({status:"error",fuenteDatos:"OCR local",message:e.message});
    $("status").textContent="No fue posible completar el OCR local: "+e.message;
- } finally { btn.disabled=false; $("sandboxBtn").disabled=false; }
+ } finally {
+   btn.disabled=false; $("sandboxBtn").disabled=false;
+   // Liberar memoria de Tesseract al terminar; especialmente importante en iPhone.
+   try{ if(ineOcrWorker){ await ineOcrWorker.terminate(); ineOcrWorker=null; } }catch(_){}
+ }
 };
 $("sandboxBtn").onclick=async()=>{
  const btn=$("sandboxBtn"); btn.disabled=true; $("status").textContent="Consultando Sandbox…";
